@@ -49,6 +49,9 @@ def launch(
     participant_index,
     network_params,
     extra_files_artifacts,
+    bootnodoor_enode=None,
+    el_binary_artifact=None,
+    otel_otlp_grpc_url=None,
 ):
     cl_client_name = service_name.split("-")[3]
 
@@ -67,9 +70,14 @@ def launch(
         participant_index,
         network_params,
         extra_files_artifacts,
+        bootnodoor_enode,
+        el_binary_artifact,
+        otel_otlp_grpc_url,
     )
 
-    service = plan.add_service(service_name, config)
+    service = plan.add_service(
+        service_name, config, force_update=participant.el_force_restart
+    )
 
     return get_el_context(
         plan,
@@ -94,6 +102,9 @@ def get_config(
     participant_index,
     network_params,
     extra_files_artifacts,
+    bootnodoor_enode=None,
+    el_binary_artifact=None,
+    otel_otlp_grpc_url=None,
 ):
     log_level = input_parser.get_client_log_level_or_default(
         participant.el_log_level, global_log_level, VERBOSITY_LEVELS
@@ -115,6 +126,7 @@ def get_config(
         if (
             launcher.builder_type == constants.FLASHBOTS_MEV_TYPE
             or launcher.builder_type == constants.COMMIT_BOOST_MEV_TYPE
+            or launcher.builder_type == constants.HELIX_MEV_TYPE
         ):
             additional_public_port_assignments[
                 constants.RBUILDER_PORT_ID
@@ -149,6 +161,7 @@ def get_config(
     if (
         launcher.builder_type == constants.FLASHBOTS_MEV_TYPE
         or launcher.builder_type == constants.COMMIT_BOOST_MEV_TYPE
+        or launcher.builder_type == constants.HELIX_MEV_TYPE
     ):
         used_port_assignments[constants.RBUILDER_PORT_ID] = RBUILDER_PORT_NUM
         used_port_assignments[
@@ -180,6 +193,7 @@ def get_config(
                 ",flashbots"
                 if launcher.builder_type == constants.FLASHBOTS_MEV_TYPE
                 or launcher.builder_type == constants.COMMIT_BOOST_MEV_TYPE
+                or launcher.builder_type == constants.HELIX_MEV_TYPE
                 else ""
             ),
             "--ws",
@@ -197,10 +211,17 @@ def get_config(
         ]
     )
 
+    # Configure storage type - reth defaults to archive, use --full for full node
+    if participant.el_storage_type == "full":
+        cmd.append("--full")
+
     if network_params.gas_limit > 0:
         cmd.append("--builder.gaslimit={0}".format(network_params.gas_limit))
 
-    if (
+    # Handle bootnode configuration with bootnodoor_enode override
+    if bootnodoor_enode != None:
+        cmd.append("--bootnodes=" + bootnodoor_enode)
+    elif (
         network_params.network == constants.NETWORK_NAME.kurtosis
         or constants.NETWORK_NAME.shadowfork in network_params.network
     ):
@@ -224,6 +245,10 @@ def get_config(
                 plan, launcher.el_cl_genesis_data.files_artifact_uuid
             )
         )
+
+    if otel_otlp_grpc_url != None:
+        cmd.append("--tracing-otlp={}".format(otel_otlp_grpc_url))
+        cmd.append("--tracing-otlp-protocol=grpc")
 
     if len(participant.el_extra_params) > 0:
         # this is a repeated<proto type>, we convert it into Starlark
@@ -254,6 +279,11 @@ def get_config(
     for mount_path, artifact in processed_mounts.items():
         files[mount_path] = artifact
 
+    # Binary injection - mount custom binary directory if provided
+    # The artifact is a directory, so we mount it and reference the binary inside
+    if el_binary_artifact != None:
+        files["/opt/bin"] = el_binary_artifact.artifact
+
     env_vars = {}
     image = participant.el_image
     if launcher.builder_type == constants.MEV_RS_MEV_TYPE:
@@ -263,6 +293,7 @@ def get_config(
     elif (
         launcher.builder_type == constants.FLASHBOTS_MEV_TYPE
         or launcher.builder_type == constants.COMMIT_BOOST_MEV_TYPE
+        or launcher.builder_type == constants.HELIX_MEV_TYPE
     ):
         image = launcher.mev_params.mev_builder_image
         cl_client_name = service_name.split("-")[4]
@@ -272,6 +303,7 @@ def get_config(
         cmd.append(
             "--txpool.no-local-transactions-propagation"
         )  # disable tx propagation so that builder will have juicy blocks
+        cmd.append("--rpc.eth-proof-window=3")
         files[
             flashbots_rbuilder.MEV_BUILDER_MOUNT_DIRPATH_ON_SERVICE
         ] = flashbots_rbuilder.MEV_BUILDER_FILES_ARTIFACT_NAME
@@ -290,10 +322,16 @@ def get_config(
         "image": image,
         "ports": used_ports,
         "public_ports": public_ports,
+        "publish_udp": port_publisher.el_enabled,
         "cmd": cmd,
         "files": files,
         "private_ip_address_placeholder": constants.PRIVATE_IP_ADDRESS_PLACEHOLDER,
-        "env_vars": env_vars | participant.el_extra_env_vars,
+        "env_vars": env_vars
+        | shared_utils.with_otel_env_vars(
+            participant.el_extra_env_vars,
+            otel_otlp_grpc_url,
+            service_name,
+        ),
         "labels": shared_utils.label_maker(
             client=constants.EL_TYPE.reth,
             client_type=constants.CLIENT_TYPES.el,
@@ -307,6 +345,16 @@ def get_config(
         "node_selectors": node_selectors,
     }
 
+    # Binary injection - override entrypoint and cmd only when binary is provided
+    if el_binary_artifact != None:
+        config_args["entrypoint"] = ["sh", "-c"]
+        config_args["cmd"] = [
+            "cp /opt/bin/{0} /usr/local/bin/reth && reth ".format(
+                el_binary_artifact.filename
+            )
+            + " ".join(cmd)
+        ]
+
     if participant.el_min_cpu > 0:
         config_args["min_cpu"] = participant.el_min_cpu
     if participant.el_max_cpu > 0:
@@ -315,6 +363,8 @@ def get_config(
         config_args["min_memory"] = participant.el_min_mem
     if participant.el_max_mem > 0:
         config_args["max_memory"] = participant.el_max_mem
+    if len(participant.el_devices) > 0:
+        config_args["devices"] = participant.el_devices
     return ServiceConfig(**config_args)
 
 
@@ -340,7 +390,7 @@ def get_el_context(
     return el_context.new_el_context(
         client_name="reth-builder" if launcher.builder_type else "reth",
         enode=enode,
-        ip_addr=service.name,
+        dns_name=service.name,
         rpc_port_num=RPC_PORT_NUM,
         ws_port_num=WS_PORT_NUM,
         engine_rpc_port_num=ENGINE_RPC_PORT_NUM,
@@ -348,6 +398,7 @@ def get_el_context(
         ws_url=ws_url,
         service_name=service_name,
         el_metrics_info=[reth_metrics_info],
+        ip_addr=service.ip_address,
     )
 
 

@@ -42,6 +42,9 @@ def launch(
     participant_index,
     network_params,
     extra_files_artifacts,
+    bootnodoor_enode=None,
+    el_binary_artifact=None,
+    otel_otlp_grpc_url=None,
 ):
     cl_client_name = service_name.split("-")[3]
 
@@ -60,9 +63,14 @@ def launch(
         participant_index,
         network_params,
         extra_files_artifacts,
+        bootnodoor_enode,
+        el_binary_artifact,
+        otel_otlp_grpc_url,
     )
 
-    service = plan.add_service(service_name, config)
+    service = plan.add_service(
+        service_name, config, force_update=participant.el_force_restart
+    )
 
     return get_el_context(
         plan,
@@ -87,6 +95,9 @@ def get_config(
     participant_index,
     network_params,
     extra_files_artifacts,
+    bootnodoor_enode=None,
+    el_binary_artifact=None,
+    otel_otlp_grpc_url=None,
 ):
     log_level = input_parser.get_client_log_level_or_default(
         participant.el_log_level, global_log_level, VERBOSITY_LEVELS
@@ -166,6 +177,10 @@ def get_config(
         "--torrent.port={0}".format(torrent_port),
     ]
 
+    # Configure storage type - erigon defaults to archive, use --prune.mode=full for full node
+    if participant.el_storage_type == "full":
+        cmd.append("--prune.mode=full")
+
     if network_params.gas_limit > 0:
         cmd.append("--miner.gaslimit={0}".format(network_params.gas_limit))
 
@@ -206,7 +221,10 @@ def get_config(
     for mount_path, artifact in processed_mounts.items():
         files[mount_path] = artifact
 
-    if (
+    # Handle bootnode configuration with bootnodoor_enode override
+    if bootnodoor_enode != None:
+        cmd.append("--bootnodes=" + bootnodoor_enode)
+    elif (
         network_params.network == constants.NETWORK_NAME.kurtosis
         or constants.NETWORK_NAME.shadowfork in network_params.network
     ):
@@ -234,17 +252,44 @@ def get_config(
     if len(participant.el_extra_params) > 0:
         cmd.extend([param for param in participant.el_extra_params])
 
-    if network_params.network not in constants.PUBLIC_NETWORKS:
-        command_arg = [init_datadir_cmd_str, " ".join(cmd)]
-        command_arg_str = " && ".join(command_arg)
-    else:
-        command_arg_str = " ".join(cmd)
+    # Binary injection - mount custom binary directory if provided
+    if el_binary_artifact != None:
+        files["/opt/bin"] = el_binary_artifact.artifact
 
-    env_vars = participant.el_extra_env_vars
+    # Build command with optional binary copy
+    cmd_str = " ".join(cmd)
+    if network_params.network not in constants.PUBLIC_NETWORKS:
+        if el_binary_artifact != None:
+            command_arg_str = (
+                init_datadir_cmd_str
+                + " && cp /opt/bin/{0} /usr/local/bin/erigon && ".format(
+                    el_binary_artifact.filename
+                )
+                + cmd_str
+            )
+        else:
+            command_arg_str = init_datadir_cmd_str + " && " + cmd_str
+    else:
+        if el_binary_artifact != None:
+            command_arg_str = (
+                "cp /opt/bin/{0} /usr/local/bin/erigon && ".format(
+                    el_binary_artifact.filename
+                )
+                + cmd_str
+            )
+        else:
+            command_arg_str = cmd_str
+
+    env_vars = shared_utils.with_otel_env_vars(
+        participant.el_extra_env_vars,
+        otel_otlp_grpc_url,
+        service_name,
+    )
     config_args = {
         "image": participant.el_image,
         "ports": used_ports,
         "public_ports": public_ports,
+        "publish_udp": port_publisher.el_enabled,
         "cmd": [command_arg_str],
         "files": files,
         "entrypoint": ENTRYPOINT_ARGS,
@@ -272,6 +317,8 @@ def get_config(
         config_args["min_memory"] = participant.el_min_mem
     if participant.el_max_mem > 0:
         config_args["max_memory"] = participant.el_max_mem
+    if len(participant.el_devices) > 0:
+        config_args["devices"] = participant.el_devices
     return ServiceConfig(**config_args)
 
 
@@ -297,7 +344,7 @@ def get_el_context(
     return el_context.new_el_context(
         client_name="erigon",
         enode=enode,
-        ip_addr=service.name,
+        dns_name=service.name,
         rpc_port_num=WS_RPC_PORT_NUM,
         ws_port_num=WS_RPC_PORT_NUM,
         engine_rpc_port_num=ENGINE_RPC_PORT_NUM,
@@ -306,6 +353,7 @@ def get_el_context(
         enr=enr,
         service_name=service_name,
         el_metrics_info=[erigon_metrics_info],
+        ip_addr=service.ip_address,
     )
 
 

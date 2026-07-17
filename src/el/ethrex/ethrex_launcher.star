@@ -37,11 +37,11 @@ def get_used_ports(discovery_port):
 
 
 VERBOSITY_LEVELS = {
-    constants.GLOBAL_LOG_LEVEL.error: "1",
-    constants.GLOBAL_LOG_LEVEL.warn: "2",
-    constants.GLOBAL_LOG_LEVEL.info: "3",
-    constants.GLOBAL_LOG_LEVEL.debug: "4",
-    constants.GLOBAL_LOG_LEVEL.trace: "5",
+    constants.GLOBAL_LOG_LEVEL.error: "error",
+    constants.GLOBAL_LOG_LEVEL.warn: "warn",
+    constants.GLOBAL_LOG_LEVEL.info: "info",
+    constants.GLOBAL_LOG_LEVEL.debug: "debug",
+    constants.GLOBAL_LOG_LEVEL.trace: "trace",
 }
 
 
@@ -59,6 +59,9 @@ def launch(
     participant_index,
     network_params,
     extra_files_artifacts,
+    bootnodoor_enode=None,
+    el_binary_artifact=None,
+    otel_otlp_grpc_url=None,
 ):
     cl_client_name = service_name.split("-")[3]
 
@@ -77,9 +80,14 @@ def launch(
         participant_index,
         network_params,
         extra_files_artifacts,
+        bootnodoor_enode,
+        el_binary_artifact,
+        otel_otlp_grpc_url,
     )
 
-    service = plan.add_service(service_name, config)
+    service = plan.add_service(
+        service_name, config, force_update=participant.el_force_restart
+    )
 
     return get_el_context(
         plan,
@@ -104,6 +112,9 @@ def get_config(
     participant_index,
     network_params,
     extra_files_artifacts,
+    bootnodoor_enode=None,
+    el_binary_artifact=None,
+    otel_otlp_grpc_url=None,
 ):
     public_ports = {}
     public_ports_for_component = None
@@ -150,8 +161,11 @@ def get_config(
             if network_params.network in constants.PUBLIC_NETWORKS
             else constants.GENESIS_CONFIG_MOUNT_PATH_ON_CONTAINER + "/genesis.json"
         ),
+        "--syncmode=full",
+        "--log.level={0}".format(VERBOSITY_LEVELS[global_log_level]),
         "--http.port={0}".format(RPC_PORT_NUM),
         "--http.addr=0.0.0.0",
+        "--http.api=eth,net,web3,debug,admin,txpool",
         "--authrpc.port={0}".format(ENGINE_RPC_PORT_NUM),
         "--authrpc.jwtsecret=" + constants.JWT_MOUNT_PATH_ON_CONTAINER,
         "--authrpc.addr=0.0.0.0",
@@ -160,8 +174,12 @@ def get_config(
         "--metrics",
         "--metrics.addr=0.0.0.0",
         "--metrics.port={0}".format(METRICS_PORT_NUM),
+        "--nat.extip=" + port_publisher.el_nat_exit_ip,
     ]
-    if network_params.network == constants.NETWORK_NAME.kurtosis:
+    # Handle bootnode configuration with bootnodoor_enode override
+    if bootnodoor_enode != None:
+        cmd.append("--bootnodes=" + bootnodoor_enode)
+    elif network_params.network == constants.NETWORK_NAME.kurtosis:
         if len(existing_el_clients) > 0:
             cmd.append(
                 "--bootnodes="
@@ -182,6 +200,9 @@ def get_config(
                 plan, launcher.el_cl_genesis_data.files_artifact_uuid
             )
         )
+
+    if network_params.gas_limit > 0:
+        cmd.append("--builder.gas-limit={0}".format(network_params.gas_limit))
 
     if len(participant.el_extra_params) > 0:
         # this is a repeated<proto type>, we convert it into Starlark
@@ -220,14 +241,23 @@ def get_config(
     for mount_path, artifact in processed_mounts.items():
         files[mount_path] = artifact
 
+    # Binary injection - mount custom binary directory if provided
+    if el_binary_artifact != None:
+        files["/opt/bin"] = el_binary_artifact.artifact
+
     config_args = {
         "image": participant.el_image,
         "ports": used_ports,
         "public_ports": public_ports,
+        "publish_udp": port_publisher.el_enabled,
         "cmd": cmd,
         "files": files,
         "private_ip_address_placeholder": constants.PRIVATE_IP_ADDRESS_PLACEHOLDER,
-        "env_vars": participant.el_extra_env_vars,
+        "env_vars": shared_utils.with_otel_env_vars(
+            participant.el_extra_env_vars,
+            otel_otlp_grpc_url,
+            service_name,
+        ),
         "labels": shared_utils.label_maker(
             client=constants.EL_TYPE.ethrex,
             client_type=constants.CLIENT_TYPES.el,
@@ -241,6 +271,16 @@ def get_config(
         "node_selectors": node_selectors,
     }
 
+    # Binary injection - override entrypoint and cmd only when binary is provided
+    if el_binary_artifact != None:
+        config_args["entrypoint"] = ["sh", "-c"]
+        config_args["cmd"] = [
+            "cp /opt/bin/{0} /usr/local/bin/ethrex && ethrex ".format(
+                el_binary_artifact.filename
+            )
+            + " ".join(cmd)
+        ]
+
     if participant.el_min_cpu > 0:
         config_args["min_cpu"] = participant.el_min_cpu
     if participant.el_max_cpu > 0:
@@ -249,6 +289,8 @@ def get_config(
         config_args["min_memory"] = participant.el_min_mem
     if participant.el_max_mem > 0:
         config_args["max_memory"] = participant.el_max_mem
+    if len(participant.el_devices) > 0:
+        config_args["devices"] = participant.el_devices
 
     return ServiceConfig(**config_args)
 
@@ -275,7 +317,7 @@ def get_el_context(
     return el_context.new_el_context(
         client_name="ethrex",
         enode=enode,
-        ip_addr=service.name,
+        dns_name=service.name,
         rpc_port_num=RPC_PORT_NUM,
         ws_port_num=WS_PORT_NUM,
         engine_rpc_port_num=ENGINE_RPC_PORT_NUM,
@@ -284,6 +326,7 @@ def get_el_context(
         enr=enr,
         service_name=service_name,
         el_metrics_info=[ethrex_metrics_info],
+        ip_addr=service.ip_address,
     )
 
 

@@ -40,6 +40,9 @@ def launch(
     participant_index,
     network_params,
     extra_files_artifacts,
+    bootnodoor_enode=None,
+    el_binary_artifact=None,
+    otel_otlp_grpc_url=None,
 ):
     cl_client_name = service_name.split("-")[3]
 
@@ -58,9 +61,14 @@ def launch(
         participant_index,
         network_params,
         extra_files_artifacts,
+        bootnodoor_enode,
+        el_binary_artifact,
+        otel_otlp_grpc_url,
     )
 
-    service = plan.add_service(service_name, config)
+    service = plan.add_service(
+        service_name, config, force_update=participant.el_force_restart
+    )
 
     return get_el_context(
         plan,
@@ -85,6 +93,9 @@ def get_config(
     participant_index,
     network_params,
     extra_files_artifacts,
+    bootnodoor_enode=None,
+    el_binary_artifact=None,
+    otel_otlp_grpc_url=None,
 ):
     log_level = input_parser.get_client_log_level_or_default(
         participant.el_log_level, global_log_level, VERBOSITY_LEVELS
@@ -133,7 +144,7 @@ def get_config(
         "--datadir=" + EXECUTION_DATA_DIRPATH_ON_CLIENT_CONTAINER,
         "--Init.WebSocketsEnabled=true",
         "--JsonRpc.Enabled=true",
-        "--JsonRpc.EnabledModules=net,eth,consensus,subscribe,web3,admin,debug,txpool",
+        "--JsonRpc.EnabledModules=net,eth,consensus,subscribe,web3,admin,debug,txpool,trace",
         "--JsonRpc.Host=0.0.0.0",
         "--JsonRpc.Port={0}".format(RPC_PORT_NUM),
         "--JsonRpc.WebSocketsPort={0}".format(WS_PORT_NUM),
@@ -147,6 +158,10 @@ def get_config(
         "--Metrics.ExposePort={0}".format(METRICS_PORT_NUM),
         "--Metrics.ExposeHost=0.0.0.0",
     ]
+
+    # Configure storage type - nethermind defaults to hybrid pruning, use None mode for archive
+    if participant.el_storage_type == "archive":
+        cmd.append("--Pruning.Mode=None")
 
     if network_params.gas_limit > 0:
         cmd.append("--Blocks.TargetBlockGasLimit={0}".format(network_params.gas_limit))
@@ -175,7 +190,10 @@ def get_config(
     else:
         cmd.append("--config=" + network_params.network)
 
-    if (
+    # Handle bootnode configuration with bootnodoor_enode override
+    if bootnodoor_enode != None:
+        cmd.append("--Discovery.Bootnodes=" + bootnodoor_enode)
+    elif (
         network_params.network == constants.NETWORK_NAME.kurtosis
         or constants.NETWORK_NAME.shadowfork in network_params.network
     ):
@@ -229,11 +247,20 @@ def get_config(
     for mount_path, artifact in processed_mounts.items():
         files[mount_path] = artifact
 
-    env_vars = participant.el_extra_env_vars
+    # Binary injection - mount custom binary directory if provided
+    if el_binary_artifact != None:
+        files["/opt/bin"] = el_binary_artifact.artifact
+
+    env_vars = shared_utils.with_otel_env_vars(
+        participant.el_extra_env_vars,
+        otel_otlp_grpc_url,
+        service_name,
+    )
     config_args = {
         "image": participant.el_image,
         "ports": used_ports,
         "public_ports": public_ports,
+        "publish_udp": port_publisher.el_enabled,
         "cmd": cmd,
         "files": files,
         "private_ip_address_placeholder": constants.PRIVATE_IP_ADDRESS_PLACEHOLDER,
@@ -251,6 +278,16 @@ def get_config(
         "node_selectors": node_selectors,
     }
 
+    # Binary injection - override entrypoint and cmd only when binary is provided
+    if el_binary_artifact != None:
+        config_args["entrypoint"] = ["sh", "-c"]
+        config_args["cmd"] = [
+            "cp /opt/bin/{0} /nethermind/nethermind && /nethermind/nethermind ".format(
+                el_binary_artifact.filename
+            )
+            + " ".join(cmd)
+        ]
+
     if participant.el_min_cpu > 0:
         config_args["min_cpu"] = participant.el_min_cpu
     if participant.el_max_cpu > 0:
@@ -259,6 +296,8 @@ def get_config(
         config_args["min_memory"] = participant.el_min_mem
     if participant.el_max_mem > 0:
         config_args["max_memory"] = participant.el_max_mem
+    if len(participant.el_devices) > 0:
+        config_args["devices"] = participant.el_devices
     return ServiceConfig(**config_args)
 
 
@@ -283,7 +322,7 @@ def get_el_context(
     return el_context.new_el_context(
         client_name="nethermind",
         enode=enode,
-        ip_addr=service.name,
+        dns_name=service.name,
         rpc_port_num=RPC_PORT_NUM,
         ws_port_num=WS_PORT_NUM,
         engine_rpc_port_num=ENGINE_RPC_PORT_NUM,
@@ -291,6 +330,7 @@ def get_el_context(
         ws_url=ws_url,
         service_name=service_name,
         el_metrics_info=[nethermind_metrics_info],
+        ip_addr=service.ip_address,
     )
 
 

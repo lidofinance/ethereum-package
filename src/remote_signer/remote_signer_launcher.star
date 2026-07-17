@@ -145,7 +145,8 @@ def get_config(
             "remote-signer", port_publisher, remote_signer_index
         )
         public_port_assignments = {
-            constants.METRICS_PORT_ID: public_ports_for_component[0]
+            REMOTE_SIGNER_HTTP_PORT_ID: public_ports_for_component[0],
+            constants.METRICS_PORT_ID: public_ports_for_component[1],
         }
         public_ports = shared_utils.get_port_specs(public_port_assignments)
 
@@ -156,6 +157,7 @@ def get_config(
         "image": image,
         "ports": ports,
         "public_ports": public_ports,
+        "publish_udp": port_publisher.remote_signer_enabled,
         "cmd": cmd,
         "files": files,
         "env_vars": participant.remote_signer_extra_env_vars,

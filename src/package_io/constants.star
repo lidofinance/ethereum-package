@@ -8,6 +8,7 @@ EL_TYPE = struct(
     ethereumjs="ethereumjs",
     nimbus="nimbus",
     ethrex="ethrex",
+    none="none",
 )
 
 CL_TYPE = struct(
@@ -17,6 +18,8 @@ CL_TYPE = struct(
     prysm="prysm",
     lodestar="lodestar",
     grandine="grandine",
+    consensoor="consensoor",
+    caplin="caplin",
 )
 
 VC_TYPE = struct(
@@ -26,6 +29,8 @@ VC_TYPE = struct(
     prysm="prysm",
     teku="teku",
     vero="vero",
+    grandine="grandine",
+    consensoor="consensoor",
 )
 
 REMOTE_SIGNER_TYPE = struct(web3signer="web3signer")
@@ -36,6 +41,7 @@ GLOBAL_LOG_LEVEL = struct(
     warn="warn",
     debug="debug",
     trace="trace",
+    custom="custom",
 )
 
 CLIENT_TYPES = struct(
@@ -63,7 +69,7 @@ ADMIN_PORT_ID = "admin"
 RBUILDER_PORT_ID = "rbuilder-rpc"
 RBUILDER_METRICS_PORT_ID = "rbuilder-metric"
 LITTLE_BIGTABLE_PORT_ID = "littlebigtable"
-VALDIATOR_GRPC_PORT_ID = "grpc"
+VALIDATOR_GRPC_PORT_ID = "grpc"
 
 VALIDATING_REWARDS_ACCOUNT = "0x8943545177806ED17B9F23F0a21ee5948eCaa776"
 MAX_ENR_ENTRIES = 20
@@ -92,12 +98,20 @@ MOCK_MEV_TYPE = "mock"
 FLASHBOTS_MEV_TYPE = "flashbots"
 MEV_RS_MEV_TYPE = "mev-rs"
 COMMIT_BOOST_MEV_TYPE = "commit-boost"
+HELIX_MEV_TYPE = "helix"
+BUILDOOR_MEV_TYPE = "buildoor"
+BUILDOOR_SERVICE_NAME = "buildoor"
+BUILDOOR_API_PORT = 8080
 DEFAULT_DORA_IMAGE = "ethpandaops/dora:latest"
+DEFAULT_CHECKPOINTZ_IMAGE = "ethpandaops/checkpointz:latest"
 DEFAULT_SPAMOOR_IMAGE = "ethpandaops/spamoor:latest"
+DEFAULT_DISRUPTOOR_IMAGE = "ethpandaops/disruptoor:latest"
+DEFAULT_SLASHOOR_IMAGE = "ethpandaops/slashoor:latest"
 DEFAULT_ASSERTOOR_IMAGE = "ethpandaops/assertoor:latest"
 DEFAULT_SNOOPER_IMAGE = "ethpandaops/rpc-snooper:latest"
+DEFAULT_BOOTNODOOR_IMAGE = "ethpandaops/bootnodoor:latest"
 DEFAULT_ETHEREUM_GENESIS_GENERATOR_IMAGE = (
-    "ethpandaops/ethereum-genesis-generator:5.1.0"
+    "ethpandaops/ethereum-genesis-generator:6.1.3"
 )
 DEFAULT_YQ_IMAGE = "linuxserver/yq"
 DEFAULT_FLASHBOTS_RELAY_IMAGE = "ethpandaops/mev-boost-relay:main"
@@ -107,6 +121,21 @@ DEFAULT_MEV_RS_IMAGE = "ethpandaops/mev-rs:main"
 DEFAULT_MEV_RS_IMAGE_MINIMAL = "ethpandaops/mev-rs:main-minimal"
 DEFAULT_COMMIT_BOOST_MEV_BOOST_IMAGE = "ghcr.io/commit-boost/pbs:latest"
 DEFAULT_MOCK_MEV_IMAGE = "ethpandaops/rustic-builder:main"
+DEFAULT_BUILDOOR_IMAGE = "ethpandaops/buildoor:main"
+DEFAULT_TRUEBLOCKS_IMAGE = "ethpandaops/trueblocks:v5.9.3"
+DEFAULT_HELIX_RELAY_IMAGE = "ghcr.io/gattaca-com/helix-relay:main"
+DEFAULT_ZKBOOST_IMAGE = "ghcr.io/eth-act/zkboost/zkboost:latest"
+
+# Mapping from numeric proof-type IDs (used in --proof-types CL/VC flags) to
+# proof_type names (EL + zkVM combination, e.g., "reth-zisk" = Reth + Zisk).
+PROOF_TYPE_ID_TO_NAME = {
+    0: "ethrex-openvm",
+    1: "ethrex-sp1",
+    2: "ethrex-zisk",
+    3: "reth-openvm",
+    4: "reth-sp1",
+    5: "reth-zisk",
+}
 DEFAULT_MEV_PUBKEY = "0xa55c1285d84ba83a5ad26420cd5ad3091e49c55a813eee651cd467db38a8c8e63192f47955e9376f6b42f6d190571cb5"
 DEFAULT_MEV_SECRET_KEY = (
     "0x607a11b45a7219cc61a3d9c5fd08c7eebd602a6a19a977f8d3771d5711a550f2"
@@ -126,8 +155,7 @@ DENEB_FORK_VERSION = "0x50000038"
 ELECTRA_FORK_VERSION = "0x60000038"
 FULU_FORK_VERSION = "0x70000038"
 GLOAS_FORK_VERSION = "0x80000038"
-EIP7441_FORK_VERSION = "0xa0000038"
-EIP7805_FORK_VERSION = "0x90000038"
+HEZE_FORK_VERSION = "0x90000038"
 
 FAR_FUTURE_EPOCH = 18446744073709551615
 
@@ -142,25 +170,23 @@ CONTAINER_REGISTRY = struct(
 NETWORK_NAME = struct(
     mainnet="mainnet",
     sepolia="sepolia",
-    holesky="holesky",
     hoodi="hoodi",
     ephemery="ephemery",
     kurtosis="kurtosis",
     verkle="verkle",
     shadowfork="shadowfork",
+    remote_enclave="kt-",
 )
 
 PUBLIC_NETWORKS = (
     "mainnet",
     "sepolia",
-    "holesky",
     "hoodi",
 )
 
 NETWORK_ID = {
     "mainnet": "1",
     "sepolia": "11155111",
-    "holesky": "17000",
     "hoodi": "560048",
 }
 
@@ -168,21 +194,18 @@ CHECKPOINT_SYNC_URL = {
     "mainnet": "https://beaconstate.info",
     "ephemery": "https://checkpoint-sync.ephemery.ethpandaops.io/",
     "sepolia": "https://checkpoint-sync.sepolia.ethpandaops.io/",
-    "holesky": "https://checkpoint-sync.holesky.ethpandaops.io/",
     "hoodi": "https://checkpoint-sync.hoodi.ethpandaops.io/",
 }
 
 GENESIS_VALIDATORS_ROOT = {
     "mainnet": "0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95",
     "sepolia": "0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078",
-    "holesky": "0x9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1",
     "hoodi": "0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f",
 }
 
 DEPOSIT_CONTRACT_ADDRESS = {
     "mainnet": "0x00000000219ab540356cBB839Cbe05303d7705Fa",
     "sepolia": "0x7f02C3E3c98b133055B8B348B2Ac625669Ed295D",
-    "holesky": "0x4242424242424242424242424242424242424242",
     "ephemery": "0x00000000219ab540356cBB839Cbe05303d7705Fa",
     "hoodi": "0x00000000219ab540356cBB839Cbe05303d7705Fa",
 }
@@ -190,7 +213,6 @@ DEPOSIT_CONTRACT_ADDRESS = {
 GENESIS_TIME = {
     "mainnet": 1606824023,
     "sepolia": 1655733600,
-    "holesky": 1695902400,
     "hoodi": 1742213400,
 }
 
@@ -228,23 +250,6 @@ VOLUME_SIZE = {
         "lodestar_volume_size": 150000,  # 150GB
         "grandine_volume_size": 150000,  # 150GB
         "ethrex_volume_size": 150000,  # 150GB
-    },
-    "holesky": {
-        "geth_volume_size": 100000,  # 100GB
-        "erigon_volume_size": 200000,  # 200GB
-        "nethermind_volume_size": 100000,  # 100GB
-        "besu_volume_size": 100000,  # 100GB
-        "reth_volume_size": 200000,  # 200GB
-        "reth_builder_volume_size": 200000,  # 200GB
-        "ethereumjs_volume_size": 100000,  # 100GB
-        "nimbus_eth1_volume_size": 100000,  # 100GB
-        "prysm_volume_size": 100000,  # 100GB
-        "lighthouse_volume_size": 100000,  # 100GB
-        "teku_volume_size": 100000,  # 100GB
-        "nimbus_volume_size": 100000,  # 100GB
-        "lodestar_volume_size": 100000,  # 100GB
-        "grandine_volume_size": 100000,  # 100GB
-        "ethrex_volume_size": 100000,  # 100GB
     },
     "devnets": {
         "geth_volume_size": 100000,  # 100GB
@@ -346,5 +351,4 @@ NODE_INDEX_LABEL_KEY = "ethereum-package.node-index"
 
 VOLUME_SIZE["mainnet-shadowfork"] = VOLUME_SIZE["mainnet"]
 VOLUME_SIZE["sepolia-shadowfork"] = VOLUME_SIZE["sepolia"]
-VOLUME_SIZE["holesky-shadowfork"] = VOLUME_SIZE["holesky"]
 VOLUME_SIZE["hoodi-shadowfork"] = VOLUME_SIZE["hoodi"]

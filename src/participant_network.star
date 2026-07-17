@@ -19,6 +19,7 @@ launch_public_network = import_module("./network_launcher/public_network.star")
 launch_devnet = import_module("./network_launcher/devnet.star")
 launch_kurtosis = import_module("./network_launcher/kurtosis.star")
 launch_shadowfork = import_module("./network_launcher/shadowfork.star")
+launch_remote_enclave = import_module("./network_launcher/remote_enclave.star")
 
 el_client_launcher = import_module("./el/el_launcher.star")
 cl_client_launcher = import_module("./cl/cl_launcher.star")
@@ -32,6 +33,7 @@ beacon_snooper = import_module("./snooper/snooper_beacon_launcher.star")
 snooper_el_launcher = import_module("./snooper/snooper_el_launcher.star")
 blobber_launcher = import_module("./blobber/blobber_launcher.star")
 cl_context_module = import_module("./cl/cl_context.star")
+bootnodoor_launcher = import_module("./bootnodoor/bootnodoor_launcher.star")
 
 
 def launch_participant_network(
@@ -48,6 +50,8 @@ def launch_participant_network(
     parallel_keystore_generation,
     extra_files_artifacts,
     tempo_otlp_grpc_url,
+    otel_otlp_grpc_url,
+    otel_otlp_http_traces_url,
     backend,
 ):
     network_id = network_params.network_id
@@ -101,6 +105,19 @@ def launch_participant_network(
             global_tolerations,
             global_node_selectors,
         )
+    elif network_params.network.startswith(constants.NETWORK_NAME.remote_enclave):
+        # We are syncing from another running kurtosis enclave
+        (
+            el_cl_data,
+            final_genesis_timestamp,
+            network_id,
+            validator_data,
+        ) = launch_remote_enclave.launch(
+            plan,
+            network_params.network,
+            global_tolerations,
+            global_node_selectors,
+        )
     elif network_params.network == constants.NETWORK_NAME.ephemery:
         # We are running an ephemery network
         (
@@ -141,6 +158,44 @@ def launch_participant_network(
             global_node_selectors,
         )
 
+    # Launch bootnodoor if configured
+    bootnodoor_enr = None
+    bootnodoor_enode = None
+    if "bootnodoor" in args_with_right_defaults.additional_services:
+        plan.print("Launching bootnodoor as bootnode service")
+        args_with_right_defaults.additional_services.remove("bootnodoor")
+        bootnodoor_enr, bootnodoor_enode = bootnodoor_launcher.launch_bootnodoor(
+            plan,
+            args_with_right_defaults.bootnodoor_params,
+            el_cl_data,
+            network_params,
+            global_node_selectors,
+            global_tolerations,
+            args_with_right_defaults.docker_cache_params,
+        )
+        plan.print("Bootnodoor launched with ENR: {0}".format(bootnodoor_enr))
+        plan.print("Bootnodoor launched with ENODE: {0}".format(bootnodoor_enode))
+
+    # Upload binary artifacts when both binary_path and force_restart are enabled
+    binary_artifacts = {}
+    for index, participant in enumerate(args_with_right_defaults.participants):
+        participant_binaries = {}
+        for bin_type, bin_path, force_restart in [
+            ("el", participant.el_binary_path, participant.el_force_restart),
+            ("cl", participant.cl_binary_path, participant.cl_force_restart),
+            ("vc", participant.vc_binary_path, participant.vc_force_restart),
+        ]:
+            if bin_path and force_restart:
+                participant_binaries[bin_type] = struct(
+                    artifact=plan.upload_files(
+                        src="../" + bin_path,
+                        name="{0}-binary-{1}".format(bin_type, index + 1),
+                    ),
+                    filename=bin_path.split("/")[-1],
+                )
+        if participant_binaries:
+            binary_artifacts[index] = participant_binaries
+
     # Launch all execution layer clients
     all_el_contexts = el_client_launcher.launch(
         plan,
@@ -158,6 +213,9 @@ def launch_participant_network(
         args_with_right_defaults.mev_type,
         args_with_right_defaults.mev_params,
         extra_files_artifacts,
+        bootnodoor_enode,
+        binary_artifacts,
+        otel_otlp_grpc_url,
     )
 
     # Launch all consensus layer clients
@@ -190,6 +248,8 @@ def launch_participant_network(
         global_tolerations,
         persistent,
         tempo_otlp_grpc_url,
+        otel_otlp_grpc_url,
+        otel_otlp_http_traces_url,
         num_participants,
         validator_data,
         prysm_password_relative_filepath,
@@ -197,7 +257,20 @@ def launch_participant_network(
         global_other_index,
         extra_files_artifacts,
         backend,
+        bootnodoor_enr,
+        binary_artifacts,
     )
+
+    # Stop beacon nodes for participants with skip_start enabled
+    for index, participant in enumerate(args_with_right_defaults.participants):
+        if participant.skip_start:
+            cl_context = all_cl_contexts[index]
+            plan.print(
+                "Stopping beacon node {0} due to skip_start flag".format(
+                    cl_context.beacon_service_name
+                )
+            )
+            plan.stop_service(cl_context.beacon_service_name)
 
     # Launch all blobbers after all CLs are up
     cl_context_to_blobber_url = {}
@@ -216,7 +289,7 @@ def launch_participant_network(
 
             # Store the blobber URL mapping
             blobber_http_url = "http://{0}:{1}".format(
-                blobber.ip_addr, blobber.port_num
+                blobber.dns_name, blobber.port_num
             )
             cl_context_to_blobber_url[
                 config.cl_context.beacon_service_name
@@ -287,7 +360,7 @@ def launch_participant_network(
             participant.node_selectors,
             global_node_selectors,
         )
-        if participant.ethereum_metrics_exporter_enabled:
+        if participant.ethereum_metrics_exporter_enabled and el_context != None:
             pair_name = "{0}-{1}-{2}".format(index_str, cl_type, el_type)
 
             ethereum_metrics_exporter_service_name = (
@@ -321,7 +394,10 @@ def launch_participant_network(
             xatu_sentry_context = None
 
         if participant.xatu_sentry_enabled:
-            pair_name = "{0}-{1}-{2}".format(index_str, cl_type, el_type)
+            if el_type == constants.EL_TYPE.none:
+                pair_name = "{0}-{1}".format(index_str, cl_type)
+            else:
+                pair_name = "{0}-{1}-{2}".format(index_str, cl_type, el_type)
 
             xatu_sentry_service_name = "xatu-sentry-{0}".format(pair_name)
 
@@ -345,7 +421,7 @@ def launch_participant_network(
 
         # Create snooper RPC context for all participants if snooper is enabled
         snooper_el_rpc_context = None
-        if participant.snooper_enabled:
+        if participant.snooper_enabled and el_context != None:
             snooper_service_name = "snooper-rpc-{0}-{1}".format(
                 index_str,
                 el_type,
@@ -359,6 +435,7 @@ def launch_participant_network(
                 args_with_right_defaults.port_publisher,
                 global_other_index,
                 args_with_right_defaults.docker_cache_params,
+                args_with_right_defaults.snooper_params,
             )
             global_other_index += 1
             plan.print(
@@ -416,6 +493,7 @@ def launch_participant_network(
                 args_with_right_defaults.port_publisher,
                 global_other_index,
                 args_with_right_defaults.docker_cache_params,
+                args_with_right_defaults.snooper_params,
             )
             plan.print(
                 "Successfully added {0} snooper participants".format(
@@ -426,20 +504,28 @@ def launch_participant_network(
 
         all_snooper_beacon_contexts.append(snooper_beacon_context)
 
-        full_name = (
-            "{0}-{1}-{2}-{3}".format(
-                index_str,
-                el_type,
-                cl_type,
-                vc_type,
+        # Match cl_launcher naming: no el segment when EL_TYPE.none (cl-idx-cl vs cl-idx-cl-el).
+        if el_type == constants.EL_TYPE.none:
+            full_name = (
+                "{0}-{1}-{2}".format(index_str, cl_type, vc_type)
+                if participant.cl_type != participant.vc_type
+                else "{0}-{1}".format(index_str, cl_type)
             )
-            if participant.cl_type != participant.vc_type
-            else "{0}-{1}-{2}".format(
-                index_str,
-                el_type,
-                cl_type,
+        else:
+            full_name = (
+                "{0}-{1}-{2}-{3}".format(
+                    index_str,
+                    el_type,
+                    cl_type,
+                    vc_type,
+                )
+                if participant.cl_type != participant.vc_type
+                else "{0}-{1}-{2}".format(
+                    index_str,
+                    el_type,
+                    cl_type,
+                )
             )
-        )
 
         if participant.use_remote_signer:
             remote_signer_context = remote_signer.launch(
@@ -465,6 +551,7 @@ def launch_participant_network(
             remote_signer_context.metrics_info["config"] = participant.prometheus_config
 
         service_name = "vc-{0}".format(full_name)
+        vc_binary_artifact = binary_artifacts.get(index, {}).get("vc", None)
         vc_service_config = vc.get_vc_config(
             plan=plan,
             launcher=vc.new_vc_launcher(el_cl_genesis_data=el_cl_data),
@@ -490,6 +577,9 @@ def launch_participant_network(
             port_publisher=args_with_right_defaults.port_publisher,
             vc_index=current_vc_index,
             extra_files_artifacts=extra_files_artifacts,
+            tempo_otlp_grpc_url=tempo_otlp_grpc_url,
+            otel_otlp_grpc_url=otel_otlp_grpc_url,
+            vc_binary_artifact=vc_binary_artifact,
         )
         if vc_service_config == None:
             continue
@@ -498,13 +588,14 @@ def launch_participant_network(
         vc_service_info[service_name] = {
             "client_name": vc_type,
             "participant_index": index,
+            "participant": participant,
         }
         current_vc_index += 1
 
     # add vc's in parallel to speed package execution
-    vc_services = {}
-    if len(vc_service_configs) > 0:
-        vc_services = plan.add_services(vc_service_configs)
+    vc_services = shared_utils.add_services_with_force_restart(
+        plan, vc_service_configs, vc_service_info, "vc_force_restart"
+    )
 
     # Create VC contexts ordered by participant index
     vc_contexts_temp = {}
@@ -604,6 +695,6 @@ def launch_participant_network(
         el_cl_data.genesis_validators_root,
         el_cl_data.files_artifact_uuid,
         network_id,
-        el_cl_data.shadowfork_times.get("osaka_time", ""),
+        el_cl_data.osaka_time,
         el_cl_data.shadowfork_block_height,
     )

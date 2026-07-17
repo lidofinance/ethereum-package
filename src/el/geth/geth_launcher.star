@@ -51,6 +51,9 @@ def launch(
     participant_index,
     network_params,
     extra_files_artifacts,
+    bootnodoor_enode=None,
+    el_binary_artifact=None,
+    otel_otlp_grpc_url=None,
 ):
     cl_client_name = service_name.split("-")[3]
 
@@ -69,9 +72,14 @@ def launch(
         participant_index,
         network_params,
         extra_files_artifacts,
+        bootnodoor_enode,
+        el_binary_artifact,
+        otel_otlp_grpc_url,
     )
 
-    service = plan.add_service(service_name, config)
+    service = plan.add_service(
+        service_name, config, force_update=participant.el_force_restart
+    )
 
     return get_el_context(
         plan,
@@ -96,24 +104,23 @@ def get_config(
     participant_index,
     network_params,
     extra_files_artifacts,
+    bootnodoor_enode=None,
+    el_binary_artifact=None,
+    otel_otlp_grpc_url=None,
 ):
     log_level = input_parser.get_client_log_level_or_default(
         participant.el_log_level, global_log_level, VERBOSITY_LEVELS
     )
 
+    # Check if archive mode is explicitly set via extra params or el_storage_type
     if (
         "--gcmode=archive" in participant.el_extra_params
         or "--gcmode archive" in participant.el_extra_params
+        or participant.el_storage_type == "archive"
     ):
         gcmode_archive = True
     else:
         gcmode_archive = False
-
-    init_datadir_cmd_str = "geth init --datadir={0} {1} {2}".format(
-        EXECUTION_DATA_DIRPATH_ON_CLIENT_CONTAINER,
-        " ".join(participant.el_init_extra_params),
-        constants.GENESIS_CONFIG_MOUNT_PATH_ON_CONTAINER + "/genesis.json",
-    )
 
     public_ports = {}
     public_ports_for_component = None
@@ -161,7 +168,9 @@ def get_config(
             else ""
         ),
         "{0}".format(
-            "--networkid={0}".format(launcher.networkid)
+            "--override.genesis={0}".format(
+                constants.GENESIS_CONFIG_MOUNT_PATH_ON_CONTAINER + "/genesis.json"
+            )
             if network_params.network not in constants.PUBLIC_NETWORKS
             else ""
         ),
@@ -180,7 +189,6 @@ def get_config(
         "--ws.port={0}".format(WS_PORT_NUM),
         "--ws.api=admin,engine,net,eth,web3,debug,txpool",
         "--ws.origins=*",
-        "--allow-insecure-unlock",
         "--nat=extip:" + port_publisher.el_nat_exit_ip,
         "--authrpc.port={0}".format(ENGINE_RPC_PORT_NUM),
         "--authrpc.addr=0.0.0.0",
@@ -222,7 +230,10 @@ def get_config(
             if "--ws.api" in arg:
                 cmd[index] = "--ws.api=admin,engine,net,eth,web3,debug,suavex"
 
-    if (
+    # Handle bootnode configuration with bootnodoor_enode override
+    if bootnodoor_enode != None:
+        cmd.append("--bootnodes=" + bootnodoor_enode)
+    elif (
         network_params.network == constants.NETWORK_NAME.kurtosis
         or constants.NETWORK_NAME.shadowfork in network_params.network
     ):
@@ -235,17 +246,6 @@ def get_config(
                 ]
             )
         )
-        if constants.NETWORK_NAME.shadowfork in network_params.network:  # shadowfork
-            cmd.append(
-                "--override.osaka=" + str(launcher.shadowfork_times["osaka_time"])
-            )
-            cmd.append(
-                "--override.bpo1=" + str(launcher.shadowfork_times["bpo_1_time"])
-            )
-            cmd.append(
-                "--override.bpo2=" + str(launcher.shadowfork_times["bpo_2_time"])
-            )
-
     elif (
         network_params.network not in constants.PUBLIC_NETWORKS
         and constants.NETWORK_NAME.shadowfork not in network_params.network
@@ -257,19 +257,19 @@ def get_config(
             )
         )
 
+    if otel_otlp_grpc_url != None:
+        cmd.append("--rpc.telemetry")
+        cmd.append(
+            "--rpc.telemetry.endpoint={}".format(
+                otel_otlp_grpc_url.replace("http://", "grpc://")
+            )
+        )
+
     if len(participant.el_extra_params) > 0:
         # this is a repeated<proto type>, we convert it into Starlark
         cmd.extend([param for param in participant.el_extra_params])
 
-    cmd_str = " ".join(cmd)
-    if network_params.network not in constants.PUBLIC_NETWORKS:
-        subcommand_strs = [
-            init_datadir_cmd_str,
-            cmd_str,
-        ]
-        command_str = " && ".join(subcommand_strs)
-    else:
-        command_str = cmd_str
+    command_str = " ".join(cmd)
 
     files = {
         constants.GENESIS_DATA_MOUNTPOINT_ON_CLIENTS: launcher.el_cl_genesis_data.files_artifact_uuid,
@@ -295,12 +295,30 @@ def get_config(
     for mount_path, artifact in processed_mounts.items():
         files[mount_path] = artifact
 
-    env_vars = participant.el_extra_env_vars
+    # Binary injection - mount custom binary directory if provided
+    if el_binary_artifact != None:
+        files["/opt/bin"] = el_binary_artifact.artifact
+        # Copy injected binary to override default, then run original command
+        cmd_str = (
+            "cp /opt/bin/{0} /usr/local/bin/geth && ".format(
+                el_binary_artifact.filename
+            )
+            + command_str
+        )
+    else:
+        cmd_str = command_str
+
+    env_vars = shared_utils.with_otel_env_vars(
+        participant.el_extra_env_vars,
+        otel_otlp_grpc_url,
+        service_name,
+    )
     config_args = {
         "image": participant.el_image,
         "ports": used_ports,
         "public_ports": public_ports,
-        "cmd": [command_str],
+        "publish_udp": port_publisher.el_enabled,
+        "cmd": [cmd_str],
         "files": files,
         "entrypoint": ENTRYPOINT_ARGS,
         "private_ip_address_placeholder": constants.PRIVATE_IP_ADDRESS_PLACEHOLDER,
@@ -326,6 +344,8 @@ def get_config(
         config_args["min_memory"] = participant.el_min_mem
     if participant.el_max_mem > 0:
         config_args["max_memory"] = participant.el_max_mem
+    if len(participant.el_devices) > 0:
+        config_args["devices"] = participant.el_devices
     return ServiceConfig(**config_args)
 
 
@@ -351,7 +371,7 @@ def get_el_context(
     return el_context.new_el_context(
         client_name="geth",
         enode=enode,
-        ip_addr=service.name,
+        dns_name=service.name,
         rpc_port_num=RPC_PORT_NUM,
         ws_port_num=WS_PORT_NUM,
         engine_rpc_port_num=ENGINE_RPC_PORT_NUM,
@@ -360,6 +380,7 @@ def get_el_context(
         enr=enr,
         service_name=service_name,
         el_metrics_info=[geth_metrics_info],
+        ip_addr=service.ip_address,
     )
 
 
@@ -372,5 +393,4 @@ def new_geth_launcher(
         el_cl_genesis_data=el_cl_genesis_data,
         jwt_file=jwt_file,
         networkid=networkid,
-        shadowfork_times=el_cl_genesis_data.shadowfork_times,
     )

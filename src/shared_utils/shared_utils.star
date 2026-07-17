@@ -20,6 +20,32 @@ def new_template_and_data(template, template_data_json):
     return struct(template=template, data=template_data_json)
 
 
+def with_otel_env_vars(env_vars, otel_otlp_grpc_url, service_name):
+    """Merge standard OTel SDK env vars in and append participant resource attrs."""
+    if otel_otlp_grpc_url == None:
+        return env_vars
+    resource_attributes = "service.name={},service.namespace=ethereum-package".format(
+        service_name
+    )
+    participant_resource_attributes = env_vars.get("OTEL_RESOURCE_ATTRIBUTES", "")
+    if participant_resource_attributes != "":
+        resource_attributes = "{},{}".format(
+            resource_attributes,
+            participant_resource_attributes,
+        )
+    merged = {
+        "OTEL_EXPORTER_OTLP_ENDPOINT": otel_otlp_grpc_url,
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+        "OTEL_SERVICE_NAME": service_name,
+        "OTEL_RESOURCE_ATTRIBUTES": resource_attributes,
+    }
+    for k, v in env_vars.items():
+        if k == "OTEL_RESOURCE_ATTRIBUTES":
+            continue
+        merged[k] = v
+    return merged
+
+
 def path_join(*args):
     joined_path = "/".join(args)
     return joined_path.replace("//", "/")
@@ -74,6 +100,18 @@ def zfill_custom(value, width):
     return ("0" * (width - len(str(value)))) + str(value)
 
 
+# Builds the service name for a per-participant buildoor instance, e.g.
+# buildoor-lighthouse-geth-1. When a participant runs more than one buildoor
+# (count > 1) a 1-based instance suffix is appended, e.g.
+# buildoor-lighthouse-geth-1-2. Used by both the input parser (to wire the CL's
+# builder endpoint) and main.star (to add the service), so they never drift.
+def get_buildoor_service_name(prefix, cl_type, el_type, index_str, instance, count):
+    base = "{0}-{1}-{2}-{3}".format(prefix, cl_type, el_type, index_str)
+    if count <= 1:
+        return base
+    return "{0}-{1}".format(base, instance + 1)
+
+
 def label_maker(
     client, client_type, image, connected_client, extra_labels, supernode=False
 ):
@@ -111,7 +149,7 @@ def get_devnet_enodes(plan, filename):
         description="Getting devnet enodes",
         files={constants.GENESIS_DATA_MOUNTPOINT_ON_CLIENTS: filename},
         wait=None,
-        run="cat /network-configs/enodes.txt | tr -d ' ' | tr '\n' ',' | sed 's/,$//'",
+        run="grep -v '^[[:space:]]*$' /network-configs/enodes.txt | tr -d ' ' | tr '\n' ',' | sed 's/,$//'",
     )
     return enode_list.output
 
@@ -121,7 +159,7 @@ def get_devnet_enrs_list(plan, filename):
         description="Creating devnet enrs list",
         files={constants.GENESIS_DATA_MOUNTPOINT_ON_CLIENTS: filename},
         wait=None,
-        run="cat /network-configs/bootstrap_nodes.txt | tr -d ' ' | tr '\n' ',' | sed 's/,$//'",
+        run="grep -v '^[[:space:]]*$' /network-configs/bootstrap_nodes.txt | tr -d ' ' | tr '\n' ',' | sed 's/,$//'",
     )
     return enr_list.output
 
@@ -209,14 +247,16 @@ def get_client_names(participant, index, participant_contexts, participant_confi
     cl_client = participant.cl_context
     el_client = participant.el_context
     vc_client = participant.vc_context
-    full_name = (
-        "{0}-{1}-{2}".format(index_str, el_client.client_name, cl_client.client_name)
-        + "-{0}".format(vc_client.client_name)
-        if vc_client != None and cl_client.client_name != vc_client.client_name
-        else "{0}-{1}-{2}".format(
+    if el_client == None:
+        base_name = "{0}-{1}".format(index_str, cl_client.client_name)
+    else:
+        base_name = "{0}-{1}-{2}".format(
             index_str, el_client.client_name, cl_client.client_name
         )
-    )
+    if vc_client != None and cl_client.client_name != vc_client.client_name:
+        full_name = base_name + "-{0}".format(vc_client.client_name)
+    else:
+        full_name = base_name
     return full_name, cl_client, el_client, participant_config
 
 
@@ -279,7 +319,7 @@ def __get_port_range(port_start, max_ports_per_component, participant_index):
     return (public_port_start, public_port_end)
 
 
-def get_port_specs(port_assignments):
+def get_port_specs(port_assignments, wait=NOT_PROVIDED_WAIT):
     ports = {}
     for port_id, port in port_assignments.items():
         if port_id in [
@@ -292,13 +332,13 @@ def get_port_specs(port_assignments):
             constants.WS_PORT_ID,
             constants.PROFILING_PORT_ID,
         ]:
-            ports.update({port_id: new_port_spec(port, TCP_PROTOCOL)})
+            ports.update({port_id: new_port_spec(port, TCP_PROTOCOL, wait=wait)})
         elif port_id in [
             constants.UDP_DISCOVERY_PORT_ID,
             constants.QUIC_DISCOVERY_PORT_ID,
             constants.TORRENT_PORT_ID,
         ]:
-            ports.update({port_id: new_port_spec(port, UDP_PROTOCOL)})
+            ports.update({port_id: new_port_spec(port, UDP_PROTOCOL, wait=wait)})
         elif port_id == constants.DEBUG_PORT_ID:
             ports.update(
                 {
@@ -312,12 +352,16 @@ def get_port_specs(port_assignments):
             constants.METRICS_PORT_ID,
             constants.VALIDATOR_HTTP_PORT_ID,
             constants.ADMIN_PORT_ID,
-            constants.VALDIATOR_GRPC_PORT_ID,
+            constants.VALIDATOR_GRPC_PORT_ID,
             constants.RBUILDER_PORT_ID,
             constants.RBUILDER_METRICS_PORT_ID,
         ]:
             ports.update(
-                {port_id: new_port_spec(port, TCP_PROTOCOL, HTTP_APPLICATION_PROTOCOL)}
+                {
+                    port_id: new_port_spec(
+                        port, TCP_PROTOCOL, HTTP_APPLICATION_PROTOCOL, wait=wait
+                    )
+                }
             )
         else:
             fail("Unknown port id: {}".format(port_id))
@@ -488,3 +532,29 @@ def get_tolerations(
                     )
                 )
     return toleration_list
+
+
+def add_services_with_force_restart(
+    plan, service_configs, participant_info, force_restart_attr
+):
+    force_restart_names = [
+        name
+        for name in service_configs.keys()
+        if getattr(participant_info[name]["participant"], force_restart_attr, False)
+        == True
+    ]
+
+    regular_configs = {
+        k: v for k, v in service_configs.items() if k not in force_restart_names
+    }
+
+    services = {}
+    if len(regular_configs) > 0:
+        services = plan.add_services(regular_configs)
+
+    for service_name in force_restart_names:
+        services[service_name] = plan.add_service(
+            service_name, service_configs[service_name], force_update=True
+        )
+
+    return services

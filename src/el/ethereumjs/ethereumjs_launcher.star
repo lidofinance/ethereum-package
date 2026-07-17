@@ -44,6 +44,9 @@ def launch(
     participant_index,
     network_params,
     extra_files_artifacts,
+    bootnodoor_enode=None,
+    el_binary_artifact=None,
+    otel_otlp_grpc_url=None,
 ):
     cl_client_name = service_name.split("-")[3]
 
@@ -62,9 +65,14 @@ def launch(
         participant_index,
         network_params,
         extra_files_artifacts,
+        bootnodoor_enode,
+        el_binary_artifact,
+        otel_otlp_grpc_url,
     )
 
-    service = plan.add_service(service_name, config)
+    service = plan.add_service(
+        service_name, config, force_update=participant.el_force_restart
+    )
 
     return get_el_context(
         plan,
@@ -89,6 +97,9 @@ def get_config(
     participant_index,
     network_params,
     extra_files_artifacts,
+    bootnodoor_enode=None,
+    el_binary_artifact=None,
+    otel_otlp_grpc_url=None,
 ):
     log_level = input_parser.get_client_log_level_or_default(
         participant.el_log_level, global_log_level, VERBOSITY_LEVELS
@@ -177,7 +188,10 @@ def get_config(
     else:
         cmd.append("--network=" + network_params.network)
 
-    if (
+    # Handle bootnode configuration with bootnodoor_enode override
+    if bootnodoor_enode != None:
+        cmd.append("--bootnodes=" + bootnodoor_enode)
+    elif (
         network_params.network == constants.NETWORK_NAME.kurtosis
         or constants.NETWORK_NAME.shadowfork in network_params.network
     ):
@@ -231,11 +245,20 @@ def get_config(
     for mount_path, artifact in processed_mounts.items():
         files[mount_path] = artifact
 
-    env_vars = participant.el_extra_env_vars
+    # Binary injection - mount custom binary directory if provided
+    if el_binary_artifact != None:
+        files["/opt/bin"] = el_binary_artifact.artifact
+
+    env_vars = shared_utils.with_otel_env_vars(
+        participant.el_extra_env_vars,
+        otel_otlp_grpc_url,
+        service_name,
+    )
     config_args = {
         "image": participant.el_image,
         "ports": used_ports,
         "public_ports": public_ports,
+        "publish_udp": port_publisher.el_enabled,
         "cmd": cmd,
         "files": files,
         "entrypoint": ENTRYPOINT_ARGS,
@@ -254,6 +277,16 @@ def get_config(
         "node_selectors": node_selectors,
     }
 
+    # Binary injection - override entrypoint and cmd only when binary is provided
+    if el_binary_artifact != None:
+        config_args["entrypoint"] = ["sh", "-c"]
+        config_args["cmd"] = [
+            "cp /opt/bin/{0} /usr/app/packages/client/bin/cli.js && node /usr/app/packages/client/bin/cli.js ".format(
+                el_binary_artifact.filename
+            )
+            + " ".join(cmd)
+        ]
+
     if participant.el_min_cpu > 0:
         config_args["min_cpu"] = participant.el_min_cpu
     if participant.el_max_cpu > 0:
@@ -262,6 +295,8 @@ def get_config(
         config_args["min_memory"] = participant.el_min_mem
     if participant.el_max_mem > 0:
         config_args["max_memory"] = participant.el_max_mem
+    if len(participant.el_devices) > 0:
+        config_args["devices"] = participant.el_devices
     return ServiceConfig(**config_args)
 
 
@@ -286,7 +321,7 @@ def get_el_context(
     return el_context.new_el_context(
         client_name="ethereumjs",
         enode=enode,
-        ip_addr=service.name,
+        dns_name=service.name,
         rpc_port_num=RPC_PORT_NUM,
         ws_port_num=WS_PORT_NUM,
         engine_rpc_port_num=ENGINE_RPC_PORT_NUM,
@@ -294,6 +329,7 @@ def get_el_context(
         ws_url=ws_url,
         service_name=service_name,
         el_metrics_info=[ethjs_metrics_info],
+        ip_addr=service.ip_address,
     )
 
 

@@ -6,6 +6,8 @@ nimbus = import_module("./nimbus/nimbus_launcher.star")
 prysm = import_module("./prysm/prysm_launcher.star")
 teku = import_module("./teku/teku_launcher.star")
 grandine = import_module("./grandine/grandine_launcher.star")
+consensoor = import_module("./consensoor/consensoor_launcher.star")
+caplin = import_module("./caplin/caplin_launcher.star")
 
 constants = import_module("../package_io/constants.star")
 input_parser = import_module("../package_io/input_parser.star")
@@ -28,6 +30,8 @@ def launch(
     global_tolerations,
     persistent,
     tempo_otlp_grpc_url,
+    otel_otlp_grpc_url,
+    otel_otlp_http_traces_url,
     num_participants,
     validator_data,
     prysm_password_relative_filepath,
@@ -35,6 +39,8 @@ def launch(
     global_other_index,
     extra_files_artifacts,
     backend,
+    bootnodoor_enr=None,
+    binary_artifacts={},
 ):
     plan.print("Launching CL network")
 
@@ -68,6 +74,7 @@ def launch(
             "launcher": prysm.new_prysm_launcher(
                 el_cl_data,
                 jwt_file,
+                otel_otlp_http_traces_url,
             ),
             "launch_method": prysm.launch,
             "get_beacon_config": prysm.get_beacon_config,
@@ -95,11 +102,41 @@ def launch(
             "get_cl_context": grandine.get_cl_context,
             "get_blobber_config": grandine.get_blobber_config,
         },
+        constants.CL_TYPE.consensoor: {
+            "launcher": consensoor.new_consensoor_launcher(
+                el_cl_data,
+                jwt_file,
+            ),
+            "launch_method": consensoor.launch,
+            "get_beacon_config": consensoor.get_beacon_config,
+            "get_cl_context": consensoor.get_cl_context,
+            "get_blobber_config": consensoor.get_blobber_config,
+        },
+        constants.CL_TYPE.caplin: {
+            "launcher": caplin.new_caplin_launcher(
+                el_cl_data,
+                jwt_file,
+            ),
+            "launch_method": caplin.launch,
+            "get_beacon_config": caplin.get_beacon_config,
+            "get_cl_context": caplin.get_cl_context,
+            "get_blobber_config": caplin.get_blobber_config,
+        },
     }
 
     all_snooper_el_engine_contexts = []
     all_cl_contexts = []
     blobber_configs_with_contexts = []
+
+    # Generic bootnode ENR override - can be set from bootnodoor or any other bootnode service
+    bootnode_enr_override = bootnodoor_enr
+    if bootnode_enr_override != None:
+        plan.print(
+            "Using bootnode ENR override for all CL clients: {0}".format(
+                bootnode_enr_override
+            )
+        )
+
     preregistered_validator_keys_for_nodes = (
         validator_data.per_node_keystores
         if network_params.network == constants.NETWORK_NAME.kurtosis
@@ -149,7 +186,10 @@ def launch(
             index + 1, len(str(len(args_with_right_defaults.participants)))
         )
 
-        cl_service_name = "cl-{0}-{1}-{2}".format(index_str, cl_type, el_type)
+        if el_type == constants.EL_TYPE.none:
+            cl_service_name = "cl-{0}-{1}".format(index_str, cl_type)
+        else:
+            cl_service_name = "cl-{0}-{1}-{2}".format(index_str, cl_type, el_type)
         new_cl_node_validator_keystores = None
         if participant.validator_count != 0:
             new_cl_node_validator_keystores = preregistered_validator_keys_for_nodes[
@@ -160,7 +200,7 @@ def launch(
 
         cl_context = None
         snooper_el_engine_context = None
-        if participant.snooper_enabled:
+        if participant.snooper_enabled and el_context != None:
             snooper_service_name = "snooper-engine-{0}-{1}-{2}".format(
                 index_str, cl_type, el_type
             )
@@ -173,6 +213,7 @@ def launch(
                 args_with_right_defaults.port_publisher,
                 global_other_index,
                 args_with_right_defaults.docker_cache_params,
+                args_with_right_defaults.snooper_params,
             )
             global_other_index += 1
             plan.print(
@@ -181,9 +222,20 @@ def launch(
                 )
             )
         checkpoint_sync_url = args_with_right_defaults.checkpoint_sync_url
-        if args_with_right_defaults.checkpoint_sync_enabled:
+        # Use participant-level checkpoint_sync_enabled if set, otherwise use global
+        checkpoint_sync_enabled = args_with_right_defaults.checkpoint_sync_enabled
+        if participant.checkpoint_sync_enabled != None:
+            checkpoint_sync_enabled = participant.checkpoint_sync_enabled
+        if checkpoint_sync_enabled:
             if args_with_right_defaults.checkpoint_sync_url == "":
-                if (
+                if network_params.network == constants.NETWORK_NAME.kurtosis:
+                    if "checkpointz" in args_with_right_defaults.additional_services:
+                        checkpoint_sync_url = "http://checkpointz:5555"
+                    else:
+                        fail(
+                            "Checkpoint sync URL is required if you enabled checkpoint_sync for kurtosis network. Please enable checkpointz additional service."
+                        )
+                elif (
                     network_params.network in constants.PUBLIC_NETWORKS
                     or network_params.network == constants.NETWORK_NAME.ephemery
                 ):
@@ -202,7 +254,13 @@ def launch(
                     )
 
         all_snooper_el_engine_contexts.append(snooper_el_engine_context)
-        full_name = "{0}-{1}-{2}".format(index_str, el_type, cl_type)
+        if el_type == constants.EL_TYPE.none:
+            full_name = "{0}-{1}".format(index_str, cl_type)
+        else:
+            full_name = "{0}-{1}-{2}".format(index_str, el_type, cl_type)
+
+        cl_binary_artifact = binary_artifacts.get(index, {}).get("cl", None)
+
         if index == 0:
             cl_context = launch_method(
                 plan,
@@ -218,7 +276,7 @@ def launch(
                 persistent,
                 tolerations,
                 node_selectors,
-                args_with_right_defaults.checkpoint_sync_enabled,
+                checkpoint_sync_enabled,
                 checkpoint_sync_url,
                 args_with_right_defaults.port_publisher,
                 index,
@@ -226,6 +284,9 @@ def launch(
                 extra_files_artifacts,
                 backend,
                 tempo_otlp_grpc_url,
+                otel_otlp_grpc_url,
+                bootnode_enr_override,
+                cl_binary_artifact,
             )
 
             blobber_config = get_blobber_config(
@@ -268,7 +329,7 @@ def launch(
                 persistent,
                 tolerations,
                 node_selectors,
-                args_with_right_defaults.checkpoint_sync_enabled,
+                checkpoint_sync_enabled,
                 checkpoint_sync_url,
                 args_with_right_defaults.port_publisher,
                 index,
@@ -276,6 +337,9 @@ def launch(
                 extra_files_artifacts,
                 backend,
                 tempo_otlp_grpc_url,
+                otel_otlp_grpc_url,
+                bootnode_enr_override,
+                cl_binary_artifact,
             )
 
             cl_participant_info[cl_service_name] = {
@@ -286,12 +350,13 @@ def launch(
                 "get_cl_context": get_cl_context,
                 "get_blobber_config": get_blobber_config,
                 "participant_index": index,
+                "cl_type": cl_type,
             }
 
     # add rest of cl's in parallel to speed package execution
-    cl_services = {}
-    if len(cl_service_configs) > 0:
-        cl_services = plan.add_services(cl_service_configs)
+    cl_services = shared_utils.add_services_with_force_restart(
+        plan, cl_service_configs, cl_participant_info, "cl_force_restart"
+    )
 
     # Create CL contexts ordered by participant index
     cl_contexts_temp = {}

@@ -69,8 +69,8 @@ def launch_assertoor(
 
         client_info = new_client_info(
             cl_client.beacon_http_url,
-            el_client.ip_addr,
-            el_client.rpc_port_num,
+            el_client.dns_name if el_client != None else "",
+            el_client.rpc_port_num if el_client != None else 0,
             participant.snooper_el_engine_context,
             participant.snooper_beacon_context,
             full_name,
@@ -141,11 +141,6 @@ def get_config(
 
     IMAGE_NAME = assertoor_params.image
 
-    default_assertoor_image = (
-        docker_cache_params.url
-        + (docker_cache_params.dockerhub_prefix if docker_cache_params.enabled else "")
-        + constants.DEFAULT_ASSERTOOR_IMAGE
-    )
     return ServiceConfig(
         image=IMAGE_NAME,
         ports=USED_PORTS,
@@ -218,13 +213,13 @@ def new_client_info(
     if el_snooper_context != None:
         el_snooper_enabled = True
         el_snooper_url = "http://{0}:{1}".format(
-            el_snooper_context.ip_addr,
+            el_snooper_context.dns_name,
             el_snooper_context.engine_rpc_port_num,
         )
     if cl_snooper_context != None:
         cl_snooper_enabled = True
         cl_snooper_url = "http://{0}:{1}".format(
-            cl_snooper_context.ip_addr,
+            cl_snooper_context.dns_name,
             cl_snooper_context.beacon_rpc_port_num,
         )
 

@@ -40,10 +40,7 @@ def launch_spamoor(
     spammers = []
 
     for index, spammer in enumerate(spamoor_params.spammers):
-        if (
-            "peerdas" in network_params.network
-            or network_params.fulu_fork_epoch != constants.FAR_FUTURE_EPOCH
-        ) and "blob" in spammer["scenario"]:
+        if (osaka_time != "") and "blob" in spammer["scenario"]:
             if "config" not in spammer:
                 spammer["config"] = {}
             spammer["config"]["fulu_activation"] = osaka_time
@@ -173,6 +170,8 @@ def new_config_template_data(
 ):
     startup_spammer_json = []
     for index, spammer in enumerate(startup_spammer):
+        if "name" not in spammer:
+            spammer["name"] = "kurtosis-{0}".format(index)
         startup_spammer_json.append(json.encode(spammer))
 
     return {
@@ -194,6 +193,8 @@ def new_hosts_template_data(
         ) = shared_utils.get_client_names(
             participant, index, participant_contexts, participant_configs
         )
+        if el_client == None:
+            continue
         if participant.snooper_el_rpc_context:
             rpchost = "http://{0}:{1}".format(
                 participant.snooper_el_rpc_context.ip_addr,
@@ -209,7 +210,7 @@ def new_hosts_template_data(
             index + 1, len(str(len(participant_contexts)))
         )
         rpchost = (
-            "group({0},{1},{2})name({3})".format(
+            "group({0},{1},{2},{1}-{2}-{0},{3})name({3})".format(
                 index_str,
                 cl_client.client_name,
                 el_client.client_name,

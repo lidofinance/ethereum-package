@@ -32,6 +32,8 @@ def get_config(
     port_publisher,
     vc_index,
     extra_files_artifacts,
+    otel_otlp_grpc_url=None,
+    vc_binary_artifact=None,
 ):
     log_level = input_parser.get_client_log_level_or_default(
         participant.vc_log_level, global_log_level, VERBOSITY_LEVELS
@@ -132,7 +134,15 @@ def get_config(
     for mount_path, artifact in processed_mounts.items():
         files[mount_path] = artifact
 
-    env_vars = participant.vc_extra_env_vars
+    # Binary injection - mount custom binary directory if provided
+    if vc_binary_artifact != None:
+        files["/opt/bin"] = vc_binary_artifact.artifact
+
+    env_vars = shared_utils.with_otel_env_vars(
+        participant.vc_extra_env_vars,
+        otel_otlp_grpc_url,
+        full_name,
+    )
     if network_params.preset == "minimal":
         env_vars["LODESTAR_PRESET"] = "minimal"
 
@@ -140,6 +150,7 @@ def get_config(
         "image": image,
         "ports": ports,
         "public_ports": public_ports,
+        "publish_udp": port_publisher.vc_enabled,
         "cmd": cmd,
         "files": files,
         "env_vars": env_vars,
@@ -156,6 +167,16 @@ def get_config(
         "node_selectors": node_selectors,
     }
 
+    # Binary injection - override entrypoint and cmd only when binary is provided
+    if vc_binary_artifact != None:
+        config_args["entrypoint"] = ["sh", "-c"]
+        config_args["cmd"] = [
+            "cp /opt/bin/{0} /usr/app/packages/cli/bin/lodestar && node /usr/app/packages/cli/bin/lodestar ".format(
+                vc_binary_artifact.filename
+            )
+            + " ".join(cmd)
+        ]
+
     if participant.vc_min_cpu > 0:
         config_args["min_cpu"] = participant.vc_min_cpu
     if participant.vc_max_cpu > 0:
@@ -164,4 +185,6 @@ def get_config(
         config_args["min_memory"] = participant.vc_min_mem
     if participant.vc_max_mem > 0:
         config_args["max_memory"] = participant.vc_max_mem
+    if len(participant.vc_devices) > 0:
+        config_args["devices"] = participant.vc_devices
     return ServiceConfig(**config_args)

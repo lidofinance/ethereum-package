@@ -40,8 +40,10 @@ def launch_forkmon(
 
     all_el_client_info = []
     for client in el_contexts:
+        if client == None:
+            continue
         client_info = new_el_client_info(
-            client.ip_addr, client.rpc_port_num, client.service_name
+            client.dns_name, client.rpc_port_num, client.service_name
         )
         all_el_client_info.append(client_info)
 

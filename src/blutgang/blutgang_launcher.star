@@ -52,9 +52,11 @@ def launch_blutgang(
         full_name, _, el_client, _ = shared_utils.get_client_names(
             participant, index, participant_contexts, participant_configs
         )
+        if el_client == None:
+            continue
         all_el_client_info.append(
             new_el_client_info(
-                el_client.ip_addr,
+                el_client.dns_name,
                 el_client.rpc_port_num,
                 el_client.ws_port_num,
                 full_name,

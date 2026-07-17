@@ -94,8 +94,7 @@ def generate_el_cl_genesis_data(
         tolerations=shared_utils.get_tolerations(global_tolerations=global_tolerations),
         node_selectors=global_node_selectors,
     )
-    shadowfork_times = {}
-
+    osaka_time = ""
     osaka_time = plan.run_sh(
         name="read-osaka-time",
         description="Reading osaka time from genesis",
@@ -104,32 +103,6 @@ def generate_el_cl_genesis_data(
         tolerations=shared_utils.get_tolerations(global_tolerations=global_tolerations),
         node_selectors=global_node_selectors,
     )
-
-    bpo_1_time = plan.run_sh(
-        name="read-bpo-1-time",
-        description="Reading bpo 1 time from genesis",
-        run="jq '.config.bpo1Time' /data/genesis.json | tr -d '\n'",
-        files={"/data": genesis.files_artifacts[0]},
-        tolerations=shared_utils.get_tolerations(global_tolerations=global_tolerations),
-        node_selectors=global_node_selectors,
-    )
-
-    bpo_2_time = plan.run_sh(
-        name="read-bpo-2-time",
-        description="Reading bpo 2 time from genesis",
-        run="jq '.config.bpo2Time' /data/genesis.json | tr -d '\n'",
-        files={"/data": genesis.files_artifacts[0]},
-        tolerations=shared_utils.get_tolerations(global_tolerations=global_tolerations),
-        node_selectors=global_node_selectors,
-    )
-
-    shadowfork_times = {
-        "osaka_time": osaka_time.output,
-        "bpo_1_time": bpo_1_time.output,
-        "bpo_2_time": bpo_2_time.output,
-    }
-
-    plan.print("Shadowfork times: {0}".format(shadowfork_times))
 
     shadowfork_block_height = ""
     if latest_block != "":
@@ -147,7 +120,7 @@ def generate_el_cl_genesis_data(
     result = el_cl_genesis_data.new_el_cl_genesis_data(
         genesis.files_artifacts[0],
         genesis_validators_root.output,
-        shadowfork_times,
+        osaka_time.output,
         shadowfork_block_height,
     )
 
@@ -177,8 +150,12 @@ def new_env_file_for_el_cl_genesis_data(
         "NumValidatorKeysToPreregister": total_num_validator_keys_to_preregister,
         "GenesisDelay": 0,  # This delay is already precaculated in the final_genesis_timestamp
         "GenesisGasLimit": network_params.genesis_gaslimit,
+        "ShuffleValidators": "true"
+        if network_params.shuffle_genesis_validators
+        else "false",
         "MaxPerEpochActivationChurnLimit": network_params.max_per_epoch_activation_churn_limit,
         "ChurnLimitQuotient": network_params.churn_limit_quotient,
+        "ConfirmationByzantineThreshold": network_params.confirmation_byzantine_threshold,
         "EjectionBalance": network_params.ejection_balance,
         "Eth1FollowDistance": network_params.eth1_follow_distance,
         "AltairForkEpoch": "{0}".format(network_params.altair_fork_epoch),
@@ -188,8 +165,7 @@ def new_env_file_for_el_cl_genesis_data(
         "ElectraForkEpoch": "{0}".format(network_params.electra_fork_epoch),
         "FuluForkEpoch": "{0}".format(network_params.fulu_fork_epoch),
         "GloasForkEpoch": "{0}".format(network_params.gloas_fork_epoch),
-        "Eip7805ForkEpoch": "{0}".format(network_params.eip7805_fork_epoch),
-        "Eip7441ForkEpoch": "{0}".format(network_params.eip7441_fork_epoch),
+        "HezeForkEpoch": "{0}".format(network_params.heze_fork_epoch),
         "GenesisForkVersion": constants.GENESIS_FORK_VERSION,
         "AltairForkVersion": constants.ALTAIR_FORK_VERSION,
         "BellatrixForkVersion": constants.BELLATRIX_FORK_VERSION,
@@ -198,26 +174,27 @@ def new_env_file_for_el_cl_genesis_data(
         "ElectraForkVersion": constants.ELECTRA_FORK_VERSION,
         "FuluForkVersion": constants.FULU_FORK_VERSION,
         "GloasForkVersion": constants.GLOAS_FORK_VERSION,
-        "Eip7805ForkVersion": constants.EIP7805_FORK_VERSION,
-        "Eip7441ForkVersion": constants.EIP7441_FORK_VERSION,
+        "HezeForkVersion": constants.HEZE_FORK_VERSION,
         "ShadowForkFile": shadowfork_file,
+        "AdditionalValidatorMnemonics": get_additional_mnemonics_json(network_params),
         "MinValidatorWithdrawabilityDelay": network_params.min_validator_withdrawability_delay,
+        "MinBuilderWithdrawabilityDelay": network_params.min_builder_withdrawability_delay,
+        "DeployEip8282Contracts": network_params.deploy_eip8282_contracts,
         "ShardCommitteePeriod": network_params.shard_committee_period,
         "AttestationDueBpsGloas": network_params.attestation_due_bps_gloas,
         "AggregateDueBpsGloas": network_params.aggregate_due_bps_gloas,
         "SyncMessageDueBpsGloas": network_params.sync_message_due_bps_gloas,
         "ContributionDueBpsGloas": network_params.contribution_due_bps_gloas,
+        "PayloadDueBps": network_params.payload_due_bps,
         "PayloadAttestationDueBps": network_params.payload_attestation_due_bps,
         "ViewFreezeCutoffBps": network_params.view_freeze_cutoff_bps,
         "InclusionListSubmissionDueBps": network_params.inclusion_list_submission_due_bps,
         "ProposerInclusionListCutoffBps": network_params.proposer_inclusion_list_cutoff_bps,
-        "DataColumnSidecarSubnetCount": network_params.data_column_sidecar_subnet_count,
         "SamplesPerSlot": network_params.samples_per_slot,
         "CustodyRequirement": network_params.custody_requirement,
         "MaxBlobsPerBlockElectra": network_params.max_blobs_per_block_electra,
         "TargetBlobsPerBlockElectra": network_params.target_blobs_per_block_electra,
         "MaxRequestBlocksDeneb": network_params.max_request_blocks_deneb,
-        "MaxRequestBlobSidecarsElectra": network_params.max_request_blob_sidecars_electra,
         "BaseFeeUpdateFractionElectra": network_params.base_fee_update_fraction_electra,
         "Preset": network_params.preset,
         "AdditionalPreloadedContractsFile": GENESIS_VALUES_PATH
@@ -248,8 +225,11 @@ def new_env_file_for_el_cl_genesis_data(
         "WithdrawalType": "{0}".format(network_params.withdrawal_type),
         "WithdrawalAddress": network_params.withdrawal_address,
         "ValidatorBalance": int(network_params.validator_balance * 1000000000),
+        "BuilderCount": network_params.builder_count,
+        "BuilderBalance": int(network_params.builder_balance * 1000000000)
+        if network_params.builder_balance > 0
+        else 0,
         "MinEpochsForDataColumnSidecarsRequests": network_params.min_epochs_for_data_column_sidecars_requests,
-        "MinEpochsForBlockRequests": network_params.min_epochs_for_block_requests,
         "ExtraEnvVars": extra_env_safe,
     }
 
@@ -264,3 +244,16 @@ def new_additionsl_contracts_file_for_el_cl_genesis_data(
     return {
         "AdditionalPreloadedContracts": additional_contracts_json,
     }
+
+
+def get_additional_mnemonics_json(
+    network_params,
+):
+    additional_mnemonics_json = network_params.additional_mnemonics
+    if type(additional_mnemonics_json) == "string":
+        # re-encode json to trim whitespaces and newlines
+        additional_mnemonics_json = json.decode(additional_mnemonics_json)
+
+    additional_mnemonics_json = json.encode(json.encode(additional_mnemonics_json))
+
+    return additional_mnemonics_json

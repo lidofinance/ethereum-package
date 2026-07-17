@@ -4,6 +4,8 @@ constants = import_module("../../../package_io/constants.star")
 shared_utils = import_module("../../../shared_utils/shared_utils.star")
 input_parser = import_module("../../../package_io/input_parser.star")
 
+BUILDER_CL_WAIT_TIMEOUT = "10m"
+
 MEV_RELAY_WEBSITE = "mev-relay-website"
 MEV_RELAY_ENDPOINT = "mev-relay-api"
 MEV_RELAY_HOUSEKEEPER = "mev-relay-housekeeper"
@@ -13,7 +15,6 @@ MEV_RELAY_WEBSITE_PORT = 9060
 MEV_RELAY_PPROF_PORT = 6060
 NETWORK_ID_TO_NAME = {
     "1": "mainnet",
-    "17000": "holesky",
     "11155111": "sepolia",
     "560048": "hoodi",
 }
@@ -51,6 +52,7 @@ def launch_mev_relay(
     index,
     global_node_selectors,
     global_tolerations,
+    builder_cl_service_name,
 ):
     tolerations = shared_utils.get_tolerations(global_tolerations=global_tolerations)
     public_ports = shared_utils.get_mev_public_port(
@@ -89,6 +91,25 @@ def launch_mev_relay(
     )
 
     network_name = NETWORK_ID_TO_NAME.get(network_id, network_id)
+
+    plan.print(
+        "Waiting for builder CL '{0}' to be synced before starting MEV relay".format(
+            builder_cl_service_name
+        )
+    )
+    plan.wait(
+        service_name=builder_cl_service_name,
+        recipe=GetHttpRequestRecipe(
+            endpoint="/eth/v1/node/syncing",
+            port_id=constants.HTTP_PORT_ID,
+            extract={"is_syncing": ".data.is_syncing | tostring"},
+        ),
+        field="extract.is_syncing",
+        assertion="==",
+        target_value="false",
+        timeout=BUILDER_CL_WAIT_TIMEOUT,
+    )
+    plan.print("Builder CL is synced, starting MEV relay services")
 
     image = mev_params.mev_relay_image
 

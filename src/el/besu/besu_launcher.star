@@ -27,6 +27,7 @@ VERBOSITY_LEVELS = {
     constants.GLOBAL_LOG_LEVEL.info: "INFO",
     constants.GLOBAL_LOG_LEVEL.debug: "DEBUG",
     constants.GLOBAL_LOG_LEVEL.trace: "TRACE",
+    constants.GLOBAL_LOG_LEVEL.custom: "CUSTOM",
 }
 
 
@@ -44,6 +45,9 @@ def launch(
     participant_index,
     network_params,
     extra_files_artifacts,
+    bootnodoor_enode=None,
+    el_binary_artifact=None,
+    otel_otlp_grpc_url=None,
 ):
     cl_client_name = service_name.split("-")[3]
 
@@ -62,9 +66,14 @@ def launch(
         participant_index,
         network_params,
         extra_files_artifacts,
+        bootnodoor_enode,
+        el_binary_artifact,
+        otel_otlp_grpc_url,
     )
 
-    service = plan.add_service(service_name, config)
+    service = plan.add_service(
+        service_name, config, force_update=participant.el_force_restart
+    )
 
     return get_el_context(
         plan,
@@ -89,6 +98,9 @@ def get_config(
     participant_index,
     network_params,
     extra_files_artifacts,
+    bootnodoor_enode=None,
+    el_binary_artifact=None,
+    otel_otlp_grpc_url=None,
 ):
     log_level = input_parser.get_client_log_level_or_default(
         participant.el_log_level, global_log_level, VERBOSITY_LEVELS
@@ -134,19 +146,24 @@ def get_config(
 
     cmd = [
         "besu",
-        "--logging=" + log_level,
+    ]
+
+    if log_level != "CUSTOM":
+        cmd.append("--logging=" + log_level)
+
+    cmd += [
         "--data-path=" + EXECUTION_DATA_DIRPATH_ON_CLIENT_CONTAINER,
         "--host-allowlist=*",
         "--rpc-http-enabled=true",
         "--rpc-http-host=0.0.0.0",
         "--rpc-http-port={0}".format(RPC_PORT_NUM),
-        "--rpc-http-api=ADMIN,CLIQUE,ETH,NET,DEBUG,TXPOOL,ENGINE,TRACE,WEB3",
+        "--rpc-http-api=ADMIN,ETH,NET,DEBUG,TXPOOL,ENGINE,TRACE,WEB3",
         "--rpc-http-cors-origins=*",
         "--rpc-http-max-active-connections=300",
         "--rpc-ws-enabled=true",
         "--rpc-ws-host=0.0.0.0",
         "--rpc-ws-port={0}".format(WS_PORT_NUM),
-        "--rpc-ws-api=ADMIN,CLIQUE,ETH,NET,DEBUG,TXPOOL,ENGINE,TRACE,WEB3",
+        "--rpc-ws-api=ADMIN,ETH,NET,DEBUG,TXPOOL,ENGINE,TRACE,WEB3",
         "--p2p-enabled=true",
         "--p2p-host=" + port_publisher.el_nat_exit_ip,
         "--p2p-port={0}".format(discovery_port_tcp),
@@ -157,6 +174,7 @@ def get_config(
         "{0}".format(
             "--sync-mode=FULL"
             if network_params.network in constants.NETWORK_NAME.kurtosis
+            or participant.el_storage_type == "archive"
             else "--sync-mode=SNAP"
         ),
         "--metrics-enabled=true",
@@ -164,6 +182,10 @@ def get_config(
         "--metrics-port={0}".format(METRICS_PORT_NUM),
         "--min-gas-price=1000000000",
     ]
+
+    # Configure storage type - besu defaults to full (BONSAI), use FOREST for archive
+    if participant.el_storage_type == "archive":
+        cmd.append("--data-storage-format=FOREST")
 
     if network_params.gas_limit > 0:
         cmd.append("--target-gas-limit={0}".format(network_params.gas_limit))
@@ -177,7 +199,10 @@ def get_config(
     else:
         cmd.append("--network=" + network_params.network)
 
-    if (
+    # Handle bootnode configuration with bootnodoor_enode override
+    if bootnodoor_enode != None:
+        cmd.append("--bootnodes=" + bootnodoor_enode)
+    elif (
         network_params.network == constants.NETWORK_NAME.kurtosis
         or constants.NETWORK_NAME.shadowfork in network_params.network
     ):
@@ -208,7 +233,14 @@ def get_config(
 
     cmd_str = " ".join(cmd)
 
-    env_vars = participant.el_extra_env_vars | JAVA_OPTS
+    env_vars = (
+        shared_utils.with_otel_env_vars(
+            participant.el_extra_env_vars,
+            otel_otlp_grpc_url,
+            service_name,
+        )
+        | JAVA_OPTS
+    )
 
     files = {
         constants.GENESIS_DATA_MOUNTPOINT_ON_CLIENTS: launcher.el_cl_genesis_data.files_artifact_uuid,
@@ -235,11 +267,23 @@ def get_config(
     for mount_path, artifact in processed_mounts.items():
         files[mount_path] = artifact
 
+    # Binary injection - mount custom binary directory if provided
+    if el_binary_artifact != None:
+        files["/opt/bin"] = el_binary_artifact.artifact
+        # Copy injected binary to override default, then run original command
+        final_cmd_str = (
+            "cp /opt/bin/{0} /opt/besu/bin/besu && ".format(el_binary_artifact.filename)
+            + cmd_str
+        )
+    else:
+        final_cmd_str = cmd_str
+
     config_args = {
         "image": participant.el_image,
         "ports": used_ports,
         "public_ports": public_ports,
-        "cmd": [cmd_str],
+        "publish_udp": port_publisher.el_enabled,
+        "cmd": [final_cmd_str],
         "files": files,
         "entrypoint": ENTRYPOINT_ARGS,
         "private_ip_address_placeholder": constants.PRIVATE_IP_ADDRESS_PLACEHOLDER,
@@ -266,6 +310,8 @@ def get_config(
         config_args["min_memory"] = participant.el_min_mem
     if participant.el_max_mem > 0:
         config_args["max_memory"] = participant.el_max_mem
+    if len(participant.el_devices) > 0:
+        config_args["devices"] = participant.el_devices
     return ServiceConfig(**config_args)
 
 
@@ -290,7 +336,7 @@ def get_el_context(
     return el_context.new_el_context(
         client_name="besu",
         enode=enode,
-        ip_addr=service.name,
+        dns_name=service.name,
         rpc_port_num=RPC_PORT_NUM,
         ws_port_num=WS_PORT_NUM,
         engine_rpc_port_num=ENGINE_HTTP_RPC_PORT_NUM,
@@ -298,6 +344,7 @@ def get_el_context(
         ws_url=ws_url,
         service_name=service_name,
         el_metrics_info=[besu_metrics_info],
+        ip_addr=service.ip_address,
     )
 
 

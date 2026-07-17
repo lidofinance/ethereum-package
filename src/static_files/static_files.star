@@ -15,16 +15,6 @@ FORKMON_CONFIG_TEMPLATE_FILEPATH = (
     STATIC_FILES_DIRPATH + "/forkmon-config/config.toml.tmpl"
 )
 
-# Validator Ranges config
-VALIDATOR_RANGES_CONFIG_TEMPLATE_FILEPATH = (
-    STATIC_FILES_DIRPATH + "/validator-ranges/config.yaml.tmpl"
-)
-
-APACHE_CONFIG_FILEPATH = STATIC_FILES_DIRPATH + "/apache-config/index.html"
-APACHE_ENR_FILEPATH = STATIC_FILES_DIRPATH + "/apache-config/enr.txt.tmpl"
-APACHE_ENR_LIST_FILEPATH = STATIC_FILES_DIRPATH + "/apache-config/enr_list.txt.tmpl"
-APACHE_ENODE_FILEPATH = STATIC_FILES_DIRPATH + "/apache-config/enode.txt.tmpl"
-
 NGINX_CONFIG_FILEPATH = STATIC_FILES_DIRPATH + "/nginx-config/index.html"
 NGINX_ENR_FILEPATH = STATIC_FILES_DIRPATH + "/nginx-config/enr.txt.tmpl"
 NGINX_ENR_LIST_FILEPATH = STATIC_FILES_DIRPATH + "/nginx-config/enr_list.txt.tmpl"
@@ -36,6 +26,9 @@ DUGTRIO_CONFIG_TEMPLATE_FILEPATH = (
 )
 BLUTGANG_CONFIG_TEMPLATE_FILEPATH = (
     STATIC_FILES_DIRPATH + "/blutgang-config/config.toml.tmpl"
+)
+CHECKPOINTZ_CONFIG_TEMPLATE_FILEPATH = (
+    STATIC_FILES_DIRPATH + "/checkpointz-config/config.yaml.tmpl"
 )
 ERPC_CONFIG_TEMPLATE_FILEPATH = STATIC_FILES_DIRPATH + "/erpc-config/erpc.yaml.tmpl"
 FORKY_CONFIG_TEMPLATE_FILEPATH = STATIC_FILES_DIRPATH + "/forky-config/config.yaml.tmpl"
@@ -62,6 +55,12 @@ SPAMOOR_CONFIG_TEMPLATE_FILEPATH = (
 )
 SPAMOOR_HOSTS_TEMPLATE_FILEPATH = (
     STATIC_FILES_DIRPATH + SPAMOOR_CONFIG_DIRPATH + "/rpc-hosts.txt.tmpl"
+)
+
+# slashoor config
+SLASHOOR_CONFIG_DIRPATH = "/slashoor-config"
+SLASHOOR_CONFIG_TEMPLATE_FILEPATH = (
+    STATIC_FILES_DIRPATH + SLASHOOR_CONFIG_DIRPATH + "/config.yaml.tmpl"
 )
 
 # xatu-sentry config
@@ -130,4 +129,13 @@ COMMIT_BOOST_CONFIG_FILEPATH = (
 
 MEMPOOL_BRIDGE_CONFIG_TEMPLATE_FILEPATH = (
     STATIC_FILES_DIRPATH + "/mempool-bridge-config/config.yaml.tmpl"
+)
+HELIX_RELAY_CONFIG_FILEPATH = STATIC_FILES_DIRPATH + "/mev/helix/config.yaml.tmpl"
+
+ZKBOOST_CONFIG_TEMPLATE_FILEPATH = (
+    STATIC_FILES_DIRPATH + "/zkboost-config/config.toml.tmpl"
+)
+
+TRUEBLOCKS_CONFIG_TEMPLATE_FILEPATH = (
+    STATIC_FILES_DIRPATH + "/trueblocks-config/trueBlocks.toml.tmpl"
 )
