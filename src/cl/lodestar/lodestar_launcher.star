@@ -198,7 +198,7 @@ def get_beacon_config(
         # ENR
         "--enr.ip={0}".format(
             "${K8S_POD_IP}"
-            if backend == "kubernetes"
+            if backend == "kubernetes" and not port_publisher.cl_enabled
             else port_publisher.cl_nat_exit_ip
         ),
         "--enr.tcp={0}".format(discovery_port_tcp),

@@ -230,7 +230,7 @@ def get_beacon_config(
         "--data-dir=" + BEACON_DATA_DIRPATH_ON_SERVICE_CONTAINER,
         "--nat=extip:{0}".format(
             "${K8S_POD_IP}"
-            if backend == "kubernetes"
+            if backend == "kubernetes" and not port_publisher.cl_enabled
             else port_publisher.cl_nat_exit_ip
         ),
         "--enr-auto-update=false",

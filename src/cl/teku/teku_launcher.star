@@ -219,7 +219,7 @@ def get_beacon_config(
         "--p2p-peer-lower-bound={0}".format(MIN_PEERS),
         "--p2p-advertised-ip={0}".format(
             "${K8S_POD_IP}"
-            if backend == "kubernetes"
+            if backend == "kubernetes" and not port_publisher.cl_enabled
             else port_publisher.cl_nat_exit_ip
         ),
         "--p2p-discovery-site-local-addresses-enabled=true",
