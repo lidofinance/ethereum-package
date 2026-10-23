@@ -216,7 +216,7 @@ def get_beacon_config(
         "--http-port={0}".format(BEACON_HTTP_PORT_NUM),
         "--p2p-host-ip={0}".format(
             "${K8S_POD_IP}"
-            if backend == "kubernetes" and not port_publisher.cl_enabled
+            if backend == "kubernetes"
             else port_publisher.cl_nat_exit_ip
         ),
         "--p2p-tcp-port={0}".format(discovery_port_tcp),

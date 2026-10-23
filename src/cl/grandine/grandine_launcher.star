@@ -223,7 +223,7 @@ def get_beacon_config(
         "--disable-enr-auto-update",
         "--enr-address={0}".format(
             "${K8S_POD_IP}"
-            if backend == "kubernetes" and not port_publisher.cl_enabled
+            if backend == "kubernetes"
             else port_publisher.cl_nat_exit_ip
         ),
         "--enr-udp-port={0}".format(discovery_port_udp),
