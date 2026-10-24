@@ -6,10 +6,13 @@ VALIDATOR_CLIENT_METRICS_PORT_NUM = 8080
 METRICS_PATH = "/metrics"
 
 VALIDATOR_CLIENT_USED_PORTS = {
+    # Some clients open metrics only after loading every keystore: Lodestar
+    # with 48,000 keys (single-threaded load) misses Kurtosis' default 15 s.
     constants.METRICS_PORT_ID: shared_utils.new_port_spec(
         VALIDATOR_CLIENT_METRICS_PORT_NUM,
         shared_utils.TCP_PROTOCOL,
         shared_utils.HTTP_APPLICATION_PROTOCOL,
+        wait="15m",
     ),
 }
 
