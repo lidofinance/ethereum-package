@@ -28,9 +28,21 @@ KEYSTORE_GENERATION_FINISHED_FILEPATH_FORMAT = "/tmp/keystores_generated-{0}-{1}
 
 SERVICE_NAME_PREFIX = "validator-key-generation-"
 
+# Kurtosis on Kubernetes stores service files by streaming `tar cf -` over an
+# SPDY exec and loses the tail of stdout when tar exits right after writing it:
+# the archive is then a valid gzip around a truncated tar, and the validator
+# client's files-artifact-expander fails (or, cut between files, the client
+# silently gets fewer keys). With 48,000 keys per node 4 of 6 stores of one
+# directory came back short; a tar that waits before exiting gave 6 of 6 whole.
+# This tar wrapper comes first in PATH in the generator container.
+TAR_WRAPPER = '#!/bin/sh\n/usr/bin/tar "$@"\nrc=$?\nsleep 5\nexit $rc\n'
+
 ENTRYPOINT_ARGS = [
-    "sleep",
-    "99999",
+    "sh",
+    "-c",
+    "printf '{0}' > /usr/local/bin/tar && chmod 755 /usr/local/bin/tar && exec sleep 99999".format(
+        TAR_WRAPPER.replace("'", "'\\''")
+    ),
 ]
 
 
@@ -256,14 +268,13 @@ def generate_validator_keystores_in_parallel(
         )
         finished_files_to_verify.append(generation_finished_filepath)
 
-        generate_keystores_cmd = 'nohup {0} keystores --insecure --prysm-pass {1} --out-loc {2} --source-mnemonic "{3}" --source-min {4} --source-max {5} && touch {6}'.format(
+        generate_keystores_cmd = 'nohup {0} keystores --insecure --prysm-pass {1} --out-loc {2} --source-mnemonic "{3}" --source-min {4} --source-max {5}'.format(
             KEYSTORES_GENERATION_TOOL_NAME,
             PRYSM_PASSWORD,
             output_dirpath,
             mnemonic,
             start_index,
             stop_index,
-            generation_finished_filepath,
         )
         teku_permissions_cmd = (
             " && chmod 777 -R " + output_dirpath + "/" + TEKU_KEYS_DIRNAME
@@ -273,6 +284,9 @@ def generate_validator_keystores_in_parallel(
         )
         generate_keystores_cmd += teku_permissions_cmd
         generate_keystores_cmd += raw_secret_permissions_cmd
+        # The finished marker comes last: the files are stored as soon as it
+        # exists, so the permission changes must be done by then.
+        generate_keystores_cmd += " && touch " + generation_finished_filepath
         all_generation_commands.append(generate_keystores_cmd)
         all_output_dirpaths.append(output_dirpath)
 
